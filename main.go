@@ -122,31 +122,39 @@ func main() {
 }
 
 func getPodLogs(c *kubernetes.Clientset, pod *v1.Pod, duration time.Duration) {
-	defer println()
 	podLogOpts := v1.PodLogOptions{Follow: true}
 	req := c.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, &podLogOpts)
 	podLogs, err := req.Stream()
 	if err != nil {
 		return
 	}
+	defer println()
 	defer podLogs.Close()
 
 	buf := new(bytes.Buffer)
-	t1 := time.Now().Add(duration)
+	stopper := time.NewTimer(duration)
+	data := make(chan []byte, 4096)
+
+	go func() {
+		for {
+			if _, err := io.Copy(buf, podLogs); err != nil {
+				return
+			}
+			data <- buf.Bytes()
+			buf.Reset()
+		}
+	}()
 
 	for {
-		if time.Now().After(t1) {
+		select {
+		case <-stopper.C:
 			return
+		case bb := <-data:
+			ss := string(bb)
+			if strings.HasPrefix(ss, "rpc error") {
+				return
+			}
+			print(ss)
 		}
-		_, err = io.Copy(buf, podLogs)
-		if err != nil {
-			return
-		}
-		s := buf.String()
-		print(s)
-		if strings.Contains(s, "Service started") {
-			return
-		}
-		buf.Reset()
 	}
 }
